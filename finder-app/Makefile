@@ -1,31 +1,28 @@
 # Makefile for the writer app w/ cross-compilation support
 
-# Toolchain config
-CC := $(CROSS_COMPILE)gcc
-CFLAGS := -Wall -Wextra -g
+# Toolchain config - Buildroot will override CC and CFLAGS
+CC ?= $(CROSS_COMPILE)gcc
+CFLAGS ?= -Wall -Wextra -g
 
 # Targets
-# Create a an executable program called writer
 TARGET := writer
-# List source code files
 SRC := writer.c
-# Automaticallly takes .c file and converts it to .o (object file)
 OBJ := $(SRC:.c=.o)
 
 # Default target
 all: $(TARGET)
 
-#Link object file to create exe
+# Link object file to create executable
 $(TARGET): $(OBJ)
-		$(CC) $(CFLAGS) $^ -o $@
-		@echo "DEBUG: Successfully built $@"
+	$(CC) $(CFLAGS) $^ -o $@
+	@echo "DEBUG: Successfully built $@"
 
 # Compile source to object file
 %.o: %.c
-		$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) -c $< -o $@
 
 # Clean artifacts
 clean:
-		rm -f $(TARGET) $(OBJ)
+	rm -f $(TARGET) $(OBJ)
 
- .PHONY: all clean
+.PHONY: all clean
