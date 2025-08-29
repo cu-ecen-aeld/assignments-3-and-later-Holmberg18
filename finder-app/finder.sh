@@ -29,11 +29,11 @@ fi
 
 
 #Get number of files containing the search string
-X=$(grep -rl --binary-files=without-match "$searchstr" "$filesdir" | wc -l)
+X=$(grep -rl "$searchstr" "$filesdir" | wc -l)
 
 
 #Get total number of matching lines
-Y=$(grep -r --binary-files=without-match "$searchstr" "$filesdir" | wc -l)
+Y=$(grep -r "$searchstr" "$filesdir" | wc -l)
 
 
 #Print results
