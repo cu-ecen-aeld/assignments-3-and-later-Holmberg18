@@ -1,13 +1,22 @@
 CC = $(CROSS_COMPILE)gcc
+CFLAGS = -Wall -Werror -g
+TARGET ?= aesdsocket
+LDFLAGS ?= -lpthread -lrt 
+SRC = aesdsocket.c
+OBJ = $(SRC:.c=.o)
 
-CFLAGS = -Wall -Werror
+all: $(TARGET)
 
-all: aesdsocket
+$(TARGET): $(OBJ)
+		$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
-aesdsocket: aesdsocket.c
-
-	$(CC) $(CFLAGS) $^ -o $@
+%.o: %.c 
+		$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
+		rm -f $(TARGET) $(OBJ)
 
-	rm -f aesdsocket
+install:
+		@echo "No install target defined"
+
+.PHONY: all clean install

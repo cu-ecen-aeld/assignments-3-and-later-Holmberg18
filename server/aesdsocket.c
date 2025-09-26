@@ -12,20 +12,152 @@
 #include "stdio.h"
 #include "arpa/inet.h"
 #include "errno.h"
+#include "stdbool.h"
+#include "pthread.h"
+#include "queue.h"
+#include "time.h"
 
 #define BACKLOG 10
 #define PORT "9000"
 #define BUFFER_SIZE 1024
+#define TIMESTAMP_INTERVAL 10
 
+// Global vars for thread managment
 volatile sig_atomic_t exit_flag = 0;
+pthread_mutex_t file_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+//Thread data structure for linked list
+struct thread_data {
+    int socket_fd;
+    pthread_t thread_id;
+    bool thread_complete;
+    SLIST_ENTRY(thread_data) entries;
+};
+
+// Linked list head
+SLIST_HEAD(thread_list, thread_data);
+struct thread_list head = SLIST_HEAD_INITIALIZER(head);
+
+// Func prototypes
+void *client_thread_func(void *arg);
+void *timestamp_thread_func(void *arg);
 
 void signal_handler(int signum) {
     exit_flag = 1;
 }
 
+// Client thread function
+void *client_thread_func(void *arg){
+    struct thread_data *tdata = (struct thread_data *)arg;
+    int client_fd = tdata->socket_fd;
+    char buffer[BUFFER_SIZE];
+    ssize_t bytes_received;
+    int data_fd;
+
+    //Open file to enter data
+    data_fd = open("/var/tmp/aesdsocketdata", O_CREAT | O_APPEND | O_RDWR, 0644);
+    if(data_fd == -1){
+        syslog(LOG_ERR, "Failed to open data file");
+        tdata->thread_complete = true;
+        close(client_fd);
+        pthread_exit(NULL);
+    }
+
+    // Receive data from client
+    while((bytes_received = recv(client_fd, buffer, BUFFER_SIZE - 1, 0)) > 0){
+        buffer[bytes_received] = '\0';
+
+        // Lock mutex for file writing
+        pthread_mutex_lock(&file_mutex);
+
+        //Write data that's receive to the file
+        if(write(data_fd, buffer, bytes_received) == -1){
+            syslog(LOG_ERR, "Failed to write to data file");
+            pthread_mutex_unlock(&file_mutex);
+            break;
+        }
+
+        // Check if packet is complete (ends with newline)
+        if(memchr(buffer, '\n', bytes_received) != NULL){
+            // Send entire file content back to client
+            lseek(data_fd, 0, SEEK_SET);
+
+            char file_buffer[BUFFER_SIZE];
+            ssize_t bytes_read;
+            ssize_t total_sent = 0;
+
+            while((bytes_read = read(data_fd, file_buffer, BUFFER_SIZE)) > 0){
+                ssize_t sent = send(client_fd, file_buffer, bytes_read, 0);
+                if(sent == -1){
+                    syslog(LOG_ERR, "Failed to send data to client");
+                    break;
+                }
+                total_sent += sent;
+            }
+        }
+
+        pthread_mutex_unlock(&file_mutex);
+
+        // If newline was found, this packet is complete
+        if(memchr(buffer, '\n', bytes_received) != NULL){
+            break;
+        }
+    }
+
+    if(bytes_received == -1){
+        syslog(LOG_ERR, "recv failed");
+    }
+
+    close(client_fd);
+    close(data_fd);
+    tdata->thread_complete = true;
+
+    pthread_exit(NULL);
+}
+
+// Timestamp thread function
+void *timestamp_thread_func(void *arg) {
+    int data_fd;
+
+    while(!exit_flag){
+        sleep(1);
+
+        if(exit_flag) break;
+
+        //Only do timestamp every 10 seconds
+        static int counter = 0;
+        if(++counter >= 10){
+            counter = 0;
+            //Generate timestamp
+            time_t now = time(NULL);
+            struct tm *timeinfo = localtime(&now);
+            char timestamp[100];
+            strftime(timestamp, sizeof(timestamp), "timestamp:%a, %d %b %Y %T %z\n", timeinfo);
+
+            // Open data file
+            data_fd = open("/var/tmp/aesdsocketdata", O_CREAT | O_APPEND | O_RDWR, 0644);
+
+            if(data_fd == -1){
+                syslog(LOG_ERR, "Failed to open data file for timestamp");
+                continue;
+            }
+
+            // Lock mutex and write timestamp
+            pthread_mutex_lock(&file_mutex);
+            write(data_fd, timestamp, strlen(timestamp));
+            pthread_mutex_unlock(&file_mutex);
+
+            close(data_fd);
+        }
+    }
+
+    pthread_exit(NULL);
+}
+
 int main(int argc, char *argv[]){
 
     int daemon_mode = 0;
+    pthread_t timestamp_tid;
 
     // Argument parsing for -d flag
     if(argc == 2 && strcmp(argv[1], "-d") == 0){
@@ -39,6 +171,9 @@ int main(int argc, char *argv[]){
     int status;
     int yes = 1;
     struct sigaction sa;
+
+    // Initialize linked list
+    SLIST_INIT(&head);
 
     //Initialize syslog
     openlog("aesdsocket", LOG_PID, LOG_USER);
@@ -119,22 +254,40 @@ int main(int argc, char *argv[]){
 
     syslog(LOG_INFO, "Socket successfully created, bound to port %s, and listening", PORT);
 
+    // Signal that server is ready for test scripts
+    printf("SERVER_READY\n");
+    fflush(stdout); // Flush the output buffer
+
+    // Start timestamp thread
+    if(pthread_create(&timestamp_tid, NULL, timestamp_thread_func, NULL) != 0){
+        syslog(LOG_ERR, "Failed to create timestamp thread");
+        close(sockfd);
+        closelog();
+        exit(EXIT_FAILURE);
+    }
+
+    // Set socket timeout
+    struct timeval timeout;
+    timeout.tv_sec = 1;
+    timeout.tv_usec = 0;
+    setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
     // Main server loop code
     while(!exit_flag) {
         struct sockaddr_storage client_addr;
         socklen_t addr_len = sizeof(client_addr);
         char client_ip[INET6_ADDRSTRLEN];
         int client_fd;
-        char buffer[BUFFER_SIZE];
-        ssize_t bytes_received;
-        int data_fd;
 
         // Accept connection
         client_fd = accept(sockfd, (struct sockaddr *)&client_addr, &addr_len);
         if (client_fd == -1) {
             // ADD DEBUG LOGGING:
             syslog(LOG_DEBUG, "accept failed. errno: %d, exit_flag: %d", errno, exit_flag);
-
+            if(errno == EAGAIN || errno == EWOULDBLOCK){
+                // Timeout, check exit_flag, and continue
+                continue;
+            }
             if (exit_flag) {
                 syslog(LOG_DEBUG, "Breaking loop due to exit_flag"); // ADD THIS
                 break;
@@ -161,66 +314,65 @@ int main(int argc, char *argv[]){
 
         syslog(LOG_INFO, "Accepted connection from %s", client_ip);
 
-        // Open data file (create if it doesn't exist)
-        data_fd = open("/var/tmp/aesdsocketdata", O_CREAT | O_APPEND | O_RDWR, 0644);
-        if(data_fd == -1){
-            syslog(LOG_ERR, "Failed to open data file");
+        // Create new thread data structure
+        struct thread_data *tdata = malloc(sizeof(struct thread_data));
+        if(!tdata){
+            syslog(LOG_ERR, "Failed to allocate thread data");
             close(client_fd);
             continue;
         }
 
-        // Receive data from client
-        while((bytes_received = recv(client_fd, buffer, BUFFER_SIZE - 1, 0)) > 0){
-            buffer[bytes_received] = '\0'; // Null terminate
+        tdata->socket_fd = client_fd;
+        tdata->thread_complete = false;
 
-            // Write received data to file
-            if(write(data_fd, buffer, bytes_received) == -1){
-                syslog(LOG_ERR, "Failed to write to data file");
-                break;
-            }
+        // Insert into linked list
+        SLIST_INSERT_HEAD(&head, tdata, entries);
 
-            //Check if packet is complete (ends with newline)
-            if(memchr(buffer, '\n', bytes_received) != NULL){
-                // Send entire file content back to client
-                lseek(data_fd, 0, SEEK_SET);
-
-                char file_buffer[BUFFER_SIZE];
-                ssize_t bytes_read;
-
-                while((bytes_read = read(data_fd, file_buffer, BUFFER_SIZE)) > 0){
-                    if(send(client_fd, file_buffer, bytes_read, 0) == -1){
-                        syslog(LOG_ERR, "Failed to send data to client");
-                        break;
-                    }
-                }
-                break; // Packet complete, break loop
-            }
+        // Create client thread;
+        if(pthread_create(&tdata->thread_id, NULL, client_thread_func, tdata) != 0){
+            syslog(LOG_ERR, "Failed to create client thread");
+            SLIST_REMOVE(&head, tdata, thread_data, entries);
+            free(tdata);
+            close(client_fd);
+            continue;
         }
 
 
-        if(bytes_received == -1){
-            syslog(LOG_ERR, "recv failed");
+        // Clean up completed threads
+        struct thread_data *tdata_temp, *tdata_iter;
+        SLIST_FOREACH_SAFE(tdata_iter, &head, entries, tdata_temp) {
+            if(tdata_iter->thread_complete){
+                pthread_join(tdata_iter->thread_id, NULL);
+                SLIST_REMOVE(&head, tdata_iter, thread_data, entries);
+                free(tdata_iter);
+            }
         }
-
-        syslog(LOG_INFO, "Closed connection from %s", client_ip);
-        close(client_fd);
-        close(data_fd);
-
     }
     // End Main server loop
     
     // Cleanup
     syslog(LOG_INFO, "Caught signal, exiting");
 
+    // Join timestamp thread
+    pthread_join(timestamp_tid, NULL);
+
+    // Join all remaning client threads
+    struct thread_data *tdata_temp, *tdata_iter;
+    SLIST_FOREACH_SAFE(tdata_iter, &head, entries, tdata_temp){
+        pthread_join(tdata_iter->thread_id, NULL);
+        SLIST_REMOVE(&head, tdata_iter, thread_data, entries);
+        free(tdata_iter);
+    }
 
     // Delete the data file
     if(unlink("/var/tmp/aesdsocketdata") == -1){
         syslog(LOG_ERR, "Failed to delete data file");
     }
 
-
+    pthread_mutex_destroy(&file_mutex);
     close(sockfd);
     closelog();
+
 
     return 0;
 };
