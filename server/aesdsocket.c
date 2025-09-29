@@ -54,7 +54,7 @@ void *client_thread_func(void *arg){
     ssize_t bytes_received;
     int data_fd;
 
-    // Open file once per thread
+    //Open file to enter data
     data_fd = open("/var/tmp/aesdsocketdata", O_CREAT | O_APPEND | O_RDWR, 0644);
     if(data_fd == -1){
         syslog(LOG_ERR, "Failed to open data file");
@@ -70,7 +70,7 @@ void *client_thread_func(void *arg){
         // Lock mutex for file writing
         pthread_mutex_lock(&file_mutex);
 
-        // Write received data to file
+        //Write data that's receive to the file
         if(write(data_fd, buffer, bytes_received) == -1){
             syslog(LOG_ERR, "Failed to write to data file");
             pthread_mutex_unlock(&file_mutex);
@@ -79,27 +79,21 @@ void *client_thread_func(void *arg){
 
         // Check if packet is complete (ends with newline)
         if(memchr(buffer, '\n', bytes_received) != NULL){
-            // IMPORTANT: Seek to beginning to read entire file
-            if(lseek(data_fd, 0, SEEK_SET) == -1){
-                syslog(LOG_ERR, "lseek failed");
-                pthread_mutex_unlock(&file_mutex);
-                break;
-            }
+            // Send entire file content back to client
+            lseek(data_fd, 0, SEEK_SET);
 
-            // Read entire file and send back to client
             char file_buffer[BUFFER_SIZE];
             ssize_t bytes_read;
-            
+            ssize_t total_sent = 0;
+
             while((bytes_read = read(data_fd, file_buffer, BUFFER_SIZE)) > 0){
                 ssize_t sent = send(client_fd, file_buffer, bytes_read, 0);
                 if(sent == -1){
                     syslog(LOG_ERR, "Failed to send data to client");
                     break;
                 }
+                total_sent += sent;
             }
-            
-            // Seek back to end for next write
-            lseek(data_fd, 0, SEEK_END);
         }
 
         pthread_mutex_unlock(&file_mutex);
