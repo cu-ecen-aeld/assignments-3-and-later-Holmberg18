@@ -22,9 +22,20 @@
 #define BUFFER_SIZE 1024
 #define TIMESTAMP_INTERVAL 10
 
+// Add the build switch for char device
+#ifdef USE_AESD_CHAR_DEVICE
+#define OUTPUT_FILE "/dev/aesdchar"
+#else
+#define OUTPUT_FILE "/var/tmp/aesdsocketdata"
+#endif
+
 // Global vars for thread managment
 volatile sig_atomic_t exit_flag = 0;
+#ifdef USE_AESD_CHAR_DEVICE
+// No file mutex needed for char device - driver handles locking
+#else
 pthread_mutex_t file_mutex = PTHREAD_MUTEX_INITIALIZER;
+#endif
 
 //Thread data structure for linked list
 struct thread_data {
@@ -52,21 +63,73 @@ void *client_thread_func(void *arg){
     int client_fd = tdata->socket_fd;
     char buffer[BUFFER_SIZE];
     ssize_t bytes_received;
-    int data_fd;
+    int data_fd = -1;
 
-    //Open file to enter data
-    data_fd = open("/var/tmp/aesdsocketdata", O_CREAT | O_APPEND | O_RDWR, 0644);
+#ifdef USE_AESD_CHAR_DEVICE
+    // For char device, we don't need to keep file open - open/close for each operation
+    // No file mutex needed - driver handles locking
+#else
+    // Open file to enter data (original implementation)
+    data_fd = open(OUTPUT_FILE, O_CREAT | O_APPEND | O_RDWR, 0644);
     if(data_fd == -1){
         syslog(LOG_ERR, "Failed to open data file");
         tdata->thread_complete = true;
         close(client_fd);
         pthread_exit(NULL);
     }
+#endif
 
     // Receive data from client
     while((bytes_received = recv(client_fd, buffer, BUFFER_SIZE - 1, 0)) > 0){
         buffer[bytes_received] = '\0';
 
+#ifdef USE_AESD_CHAR_DEVICE
+        // CHAR DEVICE IMPLEMENTATION
+        
+        // Open char device for writing
+        data_fd = open(OUTPUT_FILE, O_WRONLY);
+        if(data_fd == -1){
+            syslog(LOG_ERR, "Failed to open char device for writing");
+            break;
+        }
+
+        // Write data to char device
+        if(write(data_fd, buffer, bytes_received) == -1){
+            syslog(LOG_ERR, "Failed to write to char device");
+            close(data_fd);
+            break;
+        }
+        close(data_fd);
+        data_fd = -1;
+
+        // Check if packet is complete and ends w/ newline
+        if(memchr(buffer, '\n', bytes_received) != NULL){
+            // Open char device for reading back
+            data_fd = open(OUTPUT_FILE, O_RDONLY);
+            if(data_fd == -1){
+                syslog(LOG_ERR, "Failed to open char device for reading");
+                break;
+            }
+
+            // Read content back from char device and send to client
+            char file_buffer[BUFFER_SIZE];
+            ssize_t bytes_read;
+            ssize_t total_sent = 0;
+
+            while((bytes_read = read(data_fd, file_buffer, BUFFER_SIZE)) > 0){
+                ssize_t sent = send(client_fd, file_buffer, bytes_read, 0);
+                if(sent == -1){
+                    syslog(LOG_ERR, "Failed to send data to client");
+                    break;
+                }
+                total_sent += sent;
+            }
+            close(data_fd);
+            data_fd = -1;
+        }
+
+#else
+        
         // Lock mutex for file writing
         pthread_mutex_lock(&file_mutex);
 
@@ -97,6 +160,7 @@ void *client_thread_func(void *arg){
         }
 
         pthread_mutex_unlock(&file_mutex);
+#endif
 
         // If newline was found, this packet is complete
         if(memchr(buffer, '\n', bytes_received) != NULL){
@@ -109,14 +173,27 @@ void *client_thread_func(void *arg){
     }
 
     close(client_fd);
+#ifdef USE_AESD_CHAR_DEVICE
+    // For char device, we already closed the file descriptor in the loop
+    if(data_fd != -1) {
+        close(data_fd);
+    }
+#else
     close(data_fd);
+#endif
     tdata->thread_complete = true;
 
     pthread_exit(NULL);
 }
 
-// Timestamp thread function
+// Timestamp thread function - Not needed for CHAR device
 void *timestamp_thread_func(void *arg) {
+#ifdef USE_AESD_CHAR_DEVICE
+    // No timestamp functionality for char device implementation
+    while(!exit_flag){
+        sleep(1);
+    }
+#else
     int data_fd;
 
     while(!exit_flag){
@@ -135,7 +212,7 @@ void *timestamp_thread_func(void *arg) {
             strftime(timestamp, sizeof(timestamp), "timestamp:%a, %d %b %Y %T %z\n", timeinfo);
 
             // Open data file
-            data_fd = open("/var/tmp/aesdsocketdata", O_CREAT | O_APPEND | O_RDWR, 0644);
+            data_fd = open(OUTPUT_FILE, O_CREAT | O_APPEND | O_RDWR, 0644);
 
             if(data_fd == -1){
                 syslog(LOG_ERR, "Failed to open data file for timestamp");
@@ -150,6 +227,7 @@ void *timestamp_thread_func(void *arg) {
             close(data_fd);
         }
     }
+#endif
 
     pthread_exit(NULL);
 }
@@ -258,7 +336,7 @@ int main(int argc, char *argv[]){
     printf("SERVER_READY\n");
     fflush(stdout); // Flush the output buffer
 
-    // Start timestamp thread
+    // Start timestamp thread (even for char device to maintain thread structure)
     if(pthread_create(&timestamp_tid, NULL, timestamp_thread_func, NULL) != 0){
         syslog(LOG_ERR, "Failed to create timestamp thread");
         close(sockfd);
@@ -364,15 +442,18 @@ int main(int argc, char *argv[]){
         free(tdata_iter);
     }
 
-    // Delete the data file
-    if(unlink("/var/tmp/aesdsocketdata") == -1){
+#ifndef USE_AESD_CHAR_DEVICE
+    // Delete the data file only for file-based implementation
+    if(unlink(OUTPUT_FILE) == -1){
         syslog(LOG_ERR, "Failed to delete data file");
     }
+#endif
 
+#ifndef USE_AESD_CHAR_DEVICE
     pthread_mutex_destroy(&file_mutex);
+#endif
     close(sockfd);
     closelog();
 
-
     return 0;
-};
+}

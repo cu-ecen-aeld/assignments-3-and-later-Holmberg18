@@ -5,6 +5,13 @@ LDFLAGS ?= -lpthread -lrt
 SRC = aesdsocket.c
 OBJ = $(SRC:.c=.o)
 
+# Char device flag - set 1 to enable, 0 to disable
+USE_CHAR_DEVICE ?= 1
+
+ifeq ($(USE_CHAR_DEVICE),1)
+CFLAGS += -DUSE_AESD_CHAR_DEVICE=1
+endif;
+
 all: $(TARGET)
 
 $(TARGET): $(OBJ)
