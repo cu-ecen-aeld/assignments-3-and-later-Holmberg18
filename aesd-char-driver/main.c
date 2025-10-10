@@ -77,21 +77,21 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
     ssize_t retval = 0;
     size_t entry_offset_byte = 0;
     struct aesd_buffer_entry *entry = NULL;
-    size_t entry_offset;
+    size_t to_read;
     
     PDEBUG("read %zu bytes with offset %lld", count, *f_pos);
 
     mutex_lock(&dev->lock);
 
     // Find which entry contains the current file position
-    entry = aesd_circular_buffer_find_entry_offset_for_fpos(&dev->buffer, *f_pos, &entry_offset_byte);
+    entry = aesd_circular_buffer_find_entry_offset_for_fpos(&dev->circular_buffer, *f_pos, &entry_offset_byte);
     
     if (entry == NULL) {
         // Reached end of file
         goto out;
     }
     
-    size_t to_read = entry->size - entry_offset_byte;
+    to_read = entry->size - entry_offset_byte;
     if(to_read > count)
         to_read = count;
 
@@ -102,8 +102,8 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
     }
     
     // Update file position after read
-    *f_pos += bytes_to_read;
-    retval = bytes_to_read;
+    *f_pos += to_read;
+    retval = to_read;
 
 out:
     mutex_unlock(&dev->lock);
@@ -117,6 +117,7 @@ static long aesd_adjust_file_offset(struct file *filp, unsigned int write_cmd, u
     size_t total_offset = 0;
     int i;
     int cmd_index;
+    int total_commands;
 
     PDEBUG("Adjusting file offset: cmd=%u, offset=%u", write_cmd, write_cmd_offset);
 
@@ -126,7 +127,7 @@ static long aesd_adjust_file_offset(struct file *filp, unsigned int write_cmd, u
 
     // Make sure write_cmd is within range (not larger than total buffer entries)
     // Count total number of commands in the circular buffer
-    int total_commands = aesd_get_total_size(dev);
+    total_commands = aesd_get_total_size(dev);
     
     PDEBUG("Total commands in buffer: %d", total_commands);
 
@@ -197,7 +198,7 @@ static long aesd_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
                 break;
             }
 
-            PDEBUG("Seekto: write_cmd=%u, write_cmd_offset=%u", seekto.write_cmd, seekto.write_cmd.offset);
+            PDEBUG("Seekto: write_cmd=%u, write_cmd_offset=%u", seekto.write_cmd, seekto.write_cmd_offset);
 
             // Call helper function to adjust the file position
             retval = aesd_adjust_file_offset(filp, seekto.write_cmd, seekto.write_cmd_offset);
