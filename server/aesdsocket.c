@@ -17,7 +17,7 @@
 #include "queue.h"
 #include "time.h"
 #include "sys/ioctl.h"
-#include "../aesd-char-driver/aesd_ioctl.h"
+#include "aesd_ioctl.h"
 
 #define USE_AESD_CHAR_DEVICE 1
 #define BACKLOG 10
