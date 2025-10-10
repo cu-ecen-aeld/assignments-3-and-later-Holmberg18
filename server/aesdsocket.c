@@ -127,7 +127,7 @@ void *client_thread_func(void *arg){
                 break;
             }
 
-            syslog(LOG_DEBUG, "ioctl seek successfu, reading device content");
+            syslog(LOG_DEBUG, "ioctl seek successful, reading device content");
 
             // Read content back from char device and send to client
             // Use the same fd to ensure f_pos is set

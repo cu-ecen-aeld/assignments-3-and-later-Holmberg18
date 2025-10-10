@@ -125,12 +125,17 @@ static long aesd_adjust_file_offset(struct file *filp, unsigned int write_cmd, u
     if(mutex_lock_interruptible(&dev->lock))
         return -ERESTARTSYS;
 
-    // Make sure write_cmd is within range (not larger than total buffer entries)
     // Count total number of commands in the circular buffer
-    total_commands = aesd_get_total_size(dev);
-    
+    total_commands = 0;
+    for(i = 0; i < AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED; i++){
+        if(dev->circular_buffer.entry[i].buffptr != NULL){
+            total_commands++;
+        }
+    }
+
     PDEBUG("Total commands in buffer: %d", total_commands);
 
+    // Make sure write_cmd is within range (not larger than total buffer entries)
     if(write_cmd >= total_commands){
         PDEBUG("Invalid write_cmd: %u >= %d", write_cmd, total_commands);
         mutex_unlock(&dev->lock);
