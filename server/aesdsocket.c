@@ -107,6 +107,8 @@ void *client_thread_func(void *arg){
             // Handle seek command - perform ioctl and read back
 
             // Open char device for ioctl and reading
+            data_fd = open(OUTPUT_FILE, O_RDWR);
+            // Open char device for ioctl and reading
             if(data_fd == -1){
                 syslog(LOG_ERR, "Failed to open char device for seek command");
                 break;
@@ -135,6 +137,8 @@ void *client_thread_func(void *arg){
             // Reset to start readnig from current file
             lseek(data_fd, 0, SEEK_CUR);
 
+
+            // Read from current position
             while((bytes_read = read(data_fd, file_buffer, BUFFER_SIZE)) > 0){
                 ssize_t sent = send(client_fd, file_buffer, bytes_read, 0);
                 if(sent == -1){
