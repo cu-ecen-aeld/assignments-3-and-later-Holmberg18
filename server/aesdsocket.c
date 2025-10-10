@@ -16,6 +16,8 @@
 #include "pthread.h"
 #include "queue.h"
 #include "time.h"
+#include "sys/ioctl.h"
+#include "../aesd-char-driver/aesd_ioctl.h"
 
 #define BACKLOG 10
 #define PORT "9000"
@@ -64,6 +66,8 @@ void *client_thread_func(void *arg){
     char buffer[BUFFER_SIZE];
     ssize_t bytes_received;
     int data_fd = -1;
+    bool use_seek_command = false;
+    unsigned int write_cmd = 0, write_cmd_offset = 0;
 
 #ifdef USE_AESD_CHAR_DEVICE
     // For char device, we don't need to keep file open - open/close for each operation
@@ -83,38 +87,53 @@ void *client_thread_func(void *arg){
     while((bytes_received = recv(client_fd, buffer, BUFFER_SIZE - 1, 0)) > 0){
         buffer[bytes_received] = '\0';
 
+        // Check if this is a seek command
+        use_seek_command = false;
+        if(bytes_received >= 18 && strncmp(buffer, "AESDCHAR_IOCSEEKTO:", 18) == 0){
+            // Parse this seek command
+            if(sscanf(buffer + 18, "%u,%u", &write_cmd, &write_cmd_offset) == 2){
+                syslog(LOG_DEBUG, "Processing seek command: cmd=%u, offset=%u",
+                    write_cmd, write_cmd_offset);
+                use_seek_command = true;
+            } else {
+                syslog(LOG_ERR, "Failed to parse seek command: %s", buffer);
+            }
+        }
+
 #ifdef USE_AESD_CHAR_DEVICE
         // CHAR DEVICE IMPLEMENTATION
-        
-        // Open char device for writing
-        data_fd = open(OUTPUT_FILE, O_WRONLY);
-        if(data_fd == -1){
-            syslog(LOG_ERR, "Failed to open char device for writing");
-            break;
-        }
 
-        // Write data to char device
-        if(write(data_fd, buffer, bytes_received) == -1){
-            syslog(LOG_ERR, "Failed to write to char device");
-            close(data_fd);
-            break;
-        }
-        close(data_fd);
-        data_fd = -1;
+        if(use_seek_command){
+            // Handle seek command - perform ioctl and read back
 
-        // Check if packet is complete and ends w/ newline
-        if(memchr(buffer, '\n', bytes_received) != NULL){
-            // Open char device for reading back
-            data_fd = open(OUTPUT_FILE, O_RDONLY);
+            // Open char device for ioctl and reading
             if(data_fd == -1){
-                syslog(LOG_ERR, "Failed to open char device for reading");
+                syslog(LOG_ERR, "Failed to open char device for seek command");
                 break;
             }
 
+            // Prepare and send ioctl command
+            struct aesd_seekto seekto;
+            seekto.write_cmd = write_cmd;
+            seekto.write_cmd_offset = write_cmd_offset;
+
+            if(ioctl(data_fd, AESDCHAR_IOCSEEKTO, &seekto) == -1){
+                syslog(LOG_ERR, "ioctl seek failed: %m");
+                close(data_fd);
+                data_fd = -1;
+                break;
+            }
+
+            syslog(LOG_DEBUG, "ioctl seek successfu, reading device content");
+
             // Read content back from char device and send to client
+            // Use the same fd to ensure f_pos is set
             char file_buffer[BUFFER_SIZE];
             ssize_t bytes_read;
             ssize_t total_sent = 0;
+
+            // Reset to start readnig from current file
+            lseek(data_fd, 0, SEEK_CUR);
 
             while((bytes_read = read(data_fd, file_buffer, BUFFER_SIZE)) > 0){
                 ssize_t sent = send(client_fd, file_buffer, bytes_read, 0);
@@ -124,11 +143,69 @@ void *client_thread_func(void *arg){
                 }
                 total_sent += sent;
             }
+
             close(data_fd);
             data_fd = -1;
+
+            // Break after processing seek command
+            break;
+
+
+        } else {
+
+            // NORMAL CHAR DEVICE IMPLEMENTATION
+            
+            // Open char device for writing
+            data_fd = open(OUTPUT_FILE, O_WRONLY);
+            if(data_fd == -1){
+                syslog(LOG_ERR, "Failed to open char device for writing");
+                break;
+            }
+
+            // Write data to char device
+            if(write(data_fd, buffer, bytes_received) == -1){
+                syslog(LOG_ERR, "Failed to write to char device");
+                close(data_fd);
+                break;
+            }
+            close(data_fd);
+            data_fd = -1;
+
+            // Check if packet is complete and ends w/ newline
+            if(memchr(buffer, '\n', bytes_received) != NULL){
+                // Open char device for reading back
+                data_fd = open(OUTPUT_FILE, O_RDONLY);
+                if(data_fd == -1){
+                    syslog(LOG_ERR, "Failed to open char device for reading");
+                    break;
+                }
+
+                // Read content back from char device and send to client
+                char file_buffer[BUFFER_SIZE];
+                ssize_t bytes_read;
+                ssize_t total_sent = 0;
+
+                while((bytes_read = read(data_fd, file_buffer, BUFFER_SIZE)) > 0){
+                    ssize_t sent = send(client_fd, file_buffer, bytes_read, 0);
+                    if(sent == -1){
+                        syslog(LOG_ERR, "Failed to send data to client");
+                        break;
+                    }
+                    total_sent += sent;
+                }
+                close(data_fd);
+                data_fd = -1;
+            }
+
         }
+        
+
 
 #else
+
+        if(use_seek_command){
+            syslog(LOG_WARNING, "Seek command received but not supported in file mode");
+        }
         
         // Lock mutex for file writing
         pthread_mutex_lock(&file_mutex);
