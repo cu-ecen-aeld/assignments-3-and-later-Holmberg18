@@ -105,6 +105,8 @@ void *client_thread_func(void *arg){
         // CHAR DEVICE IMPLEMENTATION
 
         if(use_seek_command){
+            syslog(LOG_DEBUG, "=== SEEK COMMAND DETECTED ===");
+            syslog(LOG_DEBUG, "Command: %s", buffer);
             // Handle seek command - perform ioctl and read back
 
             // Open char device for ioctl and reading
