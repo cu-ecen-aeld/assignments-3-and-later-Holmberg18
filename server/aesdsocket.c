@@ -111,7 +111,7 @@ void *client_thread_func(void *arg){
             }
             
             // Parse this seek command
-            if(sscanf(seek_buffer + 18, "%u,%u", &write_cmd, &write_cmd_offset) == 2){
+            if(sscanf(seek_buffer + 19, "%u,%u", &write_cmd, &write_cmd_offset) == 2){
                 syslog(LOG_DEBUG, "Processing seek command: cmd=%u, offset=%u",
                     write_cmd, write_cmd_offset);
                 use_seek_command = true;
