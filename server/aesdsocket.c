@@ -99,13 +99,27 @@ void *client_thread_func(void *arg){
         // Check if this is a seek command
         use_seek_command = false;
         if(bytes_received >= 18 && strncmp(buffer, "AESDCHAR_IOCSEEKTO:", 18) == 0){
+            // Remove any trailing newline or whitespace before parsing
+            char *seek_buffer = buffer;
+            size_t seek_len = bytes_received;
+            
+            // Trim trailing whitespace/newline
+            while (seek_len > 0 && (seek_buffer[seek_len-1] == '\n' || 
+                                    seek_buffer[seek_len-1] == '\r' || 
+                                    seek_buffer[seek_len-1] == ' ')) {
+                seek_buffer[--seek_len] = '\0';
+            }
+            
             // Parse this seek command
-            if(sscanf(buffer + 18, "%u,%u", &write_cmd, &write_cmd_offset) == 2){
+            if(sscanf(seek_buffer + 18, "%u,%u", &write_cmd, &write_cmd_offset) == 2){
                 syslog(LOG_DEBUG, "Processing seek command: cmd=%u, offset=%u",
                     write_cmd, write_cmd_offset);
                 use_seek_command = true;
             } else {
-                syslog(LOG_ERR, "Failed to parse seek command: %s", buffer);
+                // Debug: print the exact string we're trying to parse
+                syslog(LOG_ERR, "Failed to parse seek command: '%s' (length: %zu)", 
+                    seek_buffer + 18, strlen(seek_buffer + 18));
+                syslog(LOG_ERR, "Full buffer: '%s'", buffer);
             }
         }
 
